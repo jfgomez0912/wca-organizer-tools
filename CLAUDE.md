@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 A Streamlit multi-page web app with tools for **WCA (World Cube Association)
-competition organizers and delegates**: analyzing upcoming/in-progress
+organizers and delegates**: analyzing upcoming/in-progress
 competitions and summarizing completed ones. Data is fetched live from the WCA
 API and WCIF. UI strings are in Spanish.
 
@@ -20,6 +20,7 @@ streamlit run main.py          # serves on http://localhost:8501
 ```
 
 Dependencies are managed with **uv** (Python >= 3.13):
+
 ```bash
 uv lock                        # first time, to generate uv.lock
 uv sync                        # install dependencies
@@ -78,6 +79,7 @@ a JS cookie (`wca_next`).
 cached 24h, individual persons 1h.
 
 **Page layout pattern:**
+
 ```python
 st.set_page_config(page_title="...", page_icon="🛠️", layout="wide")
 wca.render_header()   # Auth UI at top of every page

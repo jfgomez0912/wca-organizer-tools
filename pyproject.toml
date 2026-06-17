@@ -1,7 +1,7 @@
 [project]
 name = "wca-organizer-tools"
 version = "0.1.0"
-description = "Streamlit tools for WCA competition organizers (analysis, summaries, WCIF)"
+description = "Streamlit tools for WCA organizers (analysis, summaries, WCIF)"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

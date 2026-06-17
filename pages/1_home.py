@@ -2,13 +2,11 @@ import streamlit as st
 
 import wca
 
-st.set_page_config(
-    page_title="WCA Competition Organizer Tools", page_icon="🛠️", layout="wide"
-)
+st.set_page_config(page_title="WCA Organizer Tools", page_icon="🛠️", layout="wide")
 
 wca.render_header()
 
-st.title("🛠️ WCA Competition Organizer Tools")
+st.title("🛠️ WCA Organizer Tools")
 st.markdown("""
 Herramientas para **organizadores y delegados** de competencias WCA: análisis de
 inscritos, hitos y metas antes/durante la competencia, y resúmenes de resultados

@@ -1,6 +1,6 @@
-# WCA Competition Organizer Tools
+# WCA Organizer Tools
 
-Streamlit app with tools for **WCA competition organizers and delegates**:
+Streamlit app with tools for **WCA organizers and delegates**:
 analyze upcoming/in-progress competitions (rookies, milestones, 3x3 goals) and
 summarize completed ones (podiums, medals, PRs). Data comes live from the WCA
 API and WCIF; logged-in organizers can load the **private WCIF** of competitions

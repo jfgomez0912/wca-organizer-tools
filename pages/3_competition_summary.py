@@ -1,9 +1,11 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
 
 from common import BASE_SVG_URL, EVENT_MAPPING
+from config import PERSON_CACHE_TTL, PERSON_FETCH_WORKERS, PERSON_REQUEST_TIMEOUT
 from services.results import fetch_results_from_api, parse_results_from_wcif
 from wca import accepted_persons, render_competition_selector, render_header, wca_get
 
@@ -115,57 +117,104 @@ def display_medallero(df: pd.DataFrame) -> None:
     st.markdown("**Medallero**")
 
     df_final = _final_round_df(df)
-    oros = df_final[df_final["ranking"] == 1].groupby("name").size().reset_index(name="Oros")
-    podiums = df_final[df_final["ranking"] <= 3].groupby("name").size().reset_index(name="Podios")
-    medal_df = (
-        oros.merge(podiums, on="name", how="outer")
-        .fillna(0)
-        .astype({"Oros": int, "Podios": int})
-        .sort_values(["Oros", "Podios"], ascending=False)
-        .rename(columns={"name": "Nombre"})
-    )
-
-    if medal_df.empty:
+    medals = df_final[df_final["ranking"].isin([1, 2, 3])]
+    if medals.empty:
         st.info("Sin datos de medallero.")
         return
 
+    counts = (
+        medals.assign(medal=medals["ranking"].map({1: "Oro", 2: "Plata", 3: "Bronce"}))
+        .groupby(["name", "medal"])
+        .size()
+        .unstack(fill_value=0)
+        .reindex(columns=["Oro", "Plata", "Bronce"], fill_value=0)
+        .reset_index()
+    )
+    counts["Total"] = counts["Oro"] + counts["Plata"] + counts["Bronce"]
+    medal_df = counts.sort_values(
+        ["Total", "Oro", "Plata", "Bronce"], ascending=False
+    ).rename(columns={"name": "Nombre"})[["Nombre", "Total", "Oro", "Plata", "Bronce"]]
+
     st.dataframe(medal_df, hide_index=True)
+
+
+@st.cache_data(ttl=PERSON_CACHE_TTL, show_spinner=False)
+def _pre_comp_pbs(wca_id: str, before_date: str) -> dict[tuple[str, str], int]:
+    """Best single/average per event from the competitor's results BEFORE a date.
+
+    Uses their real WCA history (results at earlier competitions), so a PR reflects
+    the record at competition time — not the current PB, which may have been beaten
+    later. Returns {(event_id, type): best}; empty when this is their first
+    competition, so first-time-in-event results are excluded from PRs.
+    """
+    try:
+        results = wca_get(
+            f"persons/{wca_id}/results", timeout=PERSON_REQUEST_TIMEOUT, auth=False
+        )
+        comps = wca_get(
+            f"persons/{wca_id}/competitions", timeout=PERSON_REQUEST_TIMEOUT, auth=False
+        )
+    except Exception:
+        return {}
+    date_of = {c["id"]: c["start_date"] for c in comps}
+    pbs: dict[tuple[str, str], int] = {}
+    for r in results:
+        d = date_of.get(r["competition_id"])
+        if not d or d >= before_date:  # ISO dates compare lexicographically
+            continue
+        for typ, val in (("single", r["best"]), ("average", r["average"])):
+            if val and val > 0:
+                key = (r["event_id"], typ)
+                pbs[key] = min(pbs.get(key, val), val)
+    return pbs
 
 
 def display_records_personales(wcif: dict, df: pd.DataFrame) -> None:
     st.markdown("**Récords personales en la competencia**")
 
-    pbs = [
-        {
-            "registrant_id": p["registrantId"],
-            "event_id": pb["eventId"],
-            "type": pb["type"],
-            "best_pb": pb["best"],
-        }
-        for p in accepted_persons(wcif)
-        for pb in p.get("personalBests", [])
-    ]
-    if not pbs:
-        st.info("Sin datos de récords personales en el WCIF.")
-        return
+    comp_date = wcif["schedule"]["startDate"]
+    reg_to_wca = {p["registrantId"]: p.get("wcaId") for p in accepted_persons(wcif)}
 
-    df_pbs = pd.DataFrame(pbs)
-    df_melted = df.melt(
+    # Per-round results, in round order, melted to (competitor, event, type, result).
+    rounds = df.melt(
         id_vars=["registrant_id", "name", "event_id", "round_id"],
         value_vars=["single", "average"],
         var_name="type",
         value_name="result",
     )
-    df_melted = df_melted[df_melted["result"] > 0]
-    df_merged = df_melted.merge(df_pbs, on=["registrant_id", "event_id", "type"], how="inner")
-    df_pr = df_merged[df_merged["result"] <= df_merged["best_pb"]].copy()
-    df_pr = df_pr.sort_values(["registrant_id", "event_id", "type", "round_id"])
-    df_pr["prev_result"] = (
-        df_pr.groupby(["registrant_id", "event_id", "type"])["result"]
-        .shift(1)
-        .fillna(float("inf"))
+    rounds = rounds[rounds["result"] > 0].sort_values(
+        ["registrant_id", "event_id", "type", "round_id"]
     )
-    df_pr = df_pr[df_pr["result"] < df_pr["prev_result"]]
+
+    wca_ids = {
+        reg_to_wca[r] for r in rounds["registrant_id"].unique() if reg_to_wca.get(r)
+    }
+    pbs_by_wca: dict[str, dict] = {}
+    with st.spinner("Calculando récords personales..."):
+        with ThreadPoolExecutor(max_workers=PERSON_FETCH_WORKERS) as ex:
+            futures = {ex.submit(_pre_comp_pbs, wid, comp_date): wid for wid in wca_ids}
+            for fut in as_completed(futures):
+                pbs_by_wca[futures[fut]] = fut.result()
+
+    # Count each ROUND that ties or beats the running best, starting from the
+    # competitor's pre-competition PB. This matches the per-round PR badges on WCA Live
+    # (verified). First-time-in-event (no prior PB, e.g. a debut competition) is excluded.
+    pr_rows = []
+    for (rid, event_id, typ), grp in rounds.groupby(
+        ["registrant_id", "event_id", "type"], sort=False
+    ):
+        wid = reg_to_wca.get(rid)
+        if not wid:
+            continue  # no WCA ID yet → first competition → not a PR
+        best = pbs_by_wca.get(wid, {}).get((event_id, typ))
+        if best is None:
+            continue  # first time in this event/type → not a PR
+        for _, r in grp.iterrows():
+            if r["result"] <= best:
+                pr_rows.append({"name": r["name"], "event_id": event_id, "type": typ})
+                best = r["result"]
+
+    df_pr = pd.DataFrame(pr_rows)
 
     if df_pr.empty:
         st.info("Sin récords personales registrados en esta competencia.")
@@ -236,13 +285,13 @@ def display_records_personales(wcif: dict, df: pd.DataFrame) -> None:
     single_evs = (
         df_pr[df_pr["type"] == "single"]
         .groupby("name")["event_id"]
-        .apply(lambda x: sorted(x.unique()))
+        .apply(lambda x: sorted(x))
         .reset_index(name="single_events")
     )
     avg_evs = (
         df_pr[df_pr["type"] == "average"]
         .groupby("name")["event_id"]
-        .apply(lambda x: sorted(x.unique()))
+        .apply(lambda x: sorted(x))
         .reset_index(name="avg_events")
     )
     persons_prs = (

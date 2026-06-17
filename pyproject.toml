@@ -1,0 +1,20 @@
+[project]
+name = "wca-organizer-tools"
+version = "0.1.0"
+description = "Streamlit tools for WCA competition organizers (analysis, summaries, WCIF)"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "authlib>=1.6.8",
+    "pandas>=2.3.1",
+    "pillow>=10.0.0",
+    "qrcode>=7.4.2",
+    "requests>=2.32.4",
+    "streamlit>=1.54.0",
+    "streamlit-extras>=0.7.5",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29.5",
+]

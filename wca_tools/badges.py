@@ -183,7 +183,9 @@ def build_badge_df(
             row[f"{ev}_single"] = fmt_result(pbs.get((ev, "single")), ev, blank="")
             if ev in avg_events:
                 row[f"{ev}_avg"] = fmt_result(pbs.get((ev, "average")), ev, blank="")
-        row["qr_file"] = qr_filename(rid)
+        # "@" prefix marks this as an image field for InDesign data merge; the value
+        # is the QR filename (a path relative to the data file's folder).
+        row["@qr_file"] = qr_filename(rid)
         row["_qr_url"] = person_qr_url(comp_url, rid)
         rows.append(row)
 

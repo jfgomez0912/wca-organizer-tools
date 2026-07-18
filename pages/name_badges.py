@@ -55,7 +55,7 @@ def _build_zip(df, module_rgb, comp_url) -> bytes:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("competition.png", qr_png_bytes(comp_url, module_rgb))
         for _, row in df.iterrows():
-            zf.writestr(row["qr_file"], qr_png_bytes(row["_qr_url"], module_rgb))
+            zf.writestr(row["@qr_file"], qr_png_bytes(row["_qr_url"], module_rgb))
     return buf.getvalue()
 
 
@@ -157,7 +157,9 @@ def generate_badges(wcif: dict) -> None:
         "One QR per competitor (`person_<id>.png`) links to their CompetitionGroups "
         "person page (schedule and groups); an extra `competition.png` links to the "
         "competition's CompetitionGroups page, usable as a placeholder for staff "
-        "badges. Download them all as a ZIP below."
+        "badges. Download them all as a ZIP below. The data file's `@qr_file` column "
+        "names each PNG — InDesign data merge reads a `@`-prefixed column as an image "
+        "field, so keep the PNGs in the same folder as the data file."
     )
     color_label = st.radio(
         "QR module color",

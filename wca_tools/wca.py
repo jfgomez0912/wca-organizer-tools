@@ -170,7 +170,7 @@ def render_header(page: str = "analysis") -> None:
     )
     if authenticated():
         avatar = st.user.get("picture") or _DEFAULT_AVATAR
-        col1, col2 = st.columns([0.92, 0.08])
+        col1, col2 = st.columns([0.85, 0.15], vertical_alignment="center")
         with col1:
             st.markdown(
                 f"""
@@ -187,15 +187,16 @@ def render_header(page: str = "analysis") -> None:
                 unsafe_allow_html=True,
             )
         with col2:
-            st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
-            st.button("Sign out", on_click=st.logout, type="primary")
+            st.button(
+                "Sign out", on_click=st.logout, type="primary", width="stretch"
+            )
     else:
         if session_expired():
             st.warning("Your session has expired. Please sign in again.")
         else:
             st.info(
-                "Sign in with your WCA account to access your managed competitions "
-                "and the full analysis. Search by country and by ID is available without signing in."
+                "Sign in with your WCA account to access your managed competitions and "
+                "the private WCIF of unpublished ones."
             )
         st.button("Sign in with WCA", on_click=st.login, args=["wca"])
 

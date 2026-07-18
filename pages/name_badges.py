@@ -13,6 +13,20 @@ MODULE_COLORS = {
     "White (for dark badges)": (255, 255, 255),
 }
 
+# label -> (delimiter, mime type, file extension)
+FILE_FORMATS = {
+    "TSV": ("\t", "text/tab-separated-values", "tsv"),
+    "CSV": (",", "text/csv", "csv"),
+}
+
+# label -> Python codec. utf-16 writes a little-endian BOM (InDesign reads it as
+# "Unicode"); utf-8-sig adds a BOM so Excel opens accents correctly.
+ENCODINGS = {
+    "UTF-16 LE (InDesign)": "utf-16",
+    "UTF-8 with BOM (Excel)": "utf-8-sig",
+    "UTF-8": "utf-8",
+}
+
 
 def _country_names() -> dict[str, str]:
     """{iso2: country_name} from the cached WCA country list."""
@@ -67,18 +81,29 @@ def generate_badges(wcif: dict) -> None:
 
     df = build_badge_df(persons, event_ids, comp_url, _country_names(), int(short_max))
 
-    # Hide the internal URL column from the preview and the exported TSV.
+    # Hide the internal URL column from the preview and the exported file.
     display_df = df.drop(columns=["_qr_url"])
 
     st.markdown(f"**Preview** ({len(display_df)} competitors)")
     st.dataframe(display_df, hide_index=True)
 
-    tsv = display_df.to_csv(sep="\t", index=False)
+    col_fmt, col_enc = st.columns(2)
+    fmt = col_fmt.radio("Format", list(FILE_FORMATS), horizontal=True)
+    enc_label = col_enc.selectbox(
+        "Encoding",
+        list(ENCODINGS),
+        help=(
+            "UTF-16 LE (BOM) is the most reliable for Adobe InDesign data merge; "
+            "UTF-8 with BOM opens accents correctly in Excel; plain UTF-8 otherwise."
+        ),
+    )
+    sep, mime, ext = FILE_FORMATS[fmt]
+    text = display_df.to_csv(sep=sep, index=False)
     st.download_button(
-        "⬇️ Download badges TSV",
-        data=tsv.encode("utf-8"),
-        file_name=f"{wcif.get('id', 'competition')}_badges.tsv",
-        mime="text/tab-separated-values",
+        f"⬇️ Download badges {fmt}",
+        data=text.encode(ENCODINGS[enc_label]),
+        file_name=f"{wcif.get('id', 'competition')}_badges.{ext}",
+        mime=mime,
     )
 
     st.divider()

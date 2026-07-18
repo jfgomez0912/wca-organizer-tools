@@ -117,12 +117,23 @@ def qr_png_bytes(url: str, module_rgb: tuple[int, int, int] = (0, 0, 0)) -> byte
     return buf.getvalue()
 
 
+def person_role(person: dict, labels: dict[str, str]) -> str:
+    """Map a WCIF person's roles to a single label (delegate > organizer > competitor)."""
+    roles = person.get("roles", [])
+    if "delegate" in roles or "trainee-delegate" in roles:
+        return labels["delegate"]
+    if "organizer" in roles:
+        return labels["organizer"]
+    return labels["competitor"]
+
+
 def build_badge_df(
     persons: list[dict],
     event_ids: list[str],
     comp_url: str,
     country_names: dict[str, str] | None = None,
     short_max: int = 20,
+    role_labels: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     """Build the badge table: identity, country, per-event PBs and QR filename.
 
@@ -131,7 +142,8 @@ def build_badge_df(
     and average are shown; average is omitted for single-only events. A
     ``short_name`` column holds each name shortened to ``short_max`` characters.
     Columns use short snake_case names; per-event columns are keyed by event id
-    (e.g. ``333_single``, ``333_avg``).
+    (e.g. ``333_single``, ``333_avg``). When ``role_labels`` is given (keys
+    ``delegate``/``organizer``/``competitor``), a ``role`` column is added.
     """
     country_names = country_names or {}
     avg_events = [e for e in event_ids if e not in NO_AVERAGE_EVENTS]
@@ -152,6 +164,8 @@ def build_badge_df(
             "short_name": short_name(name, short_max),
             "country": country_names.get(iso2, iso2),
         }
+        if role_labels:
+            row["role"] = person_role(p, role_labels)
         for ev in event_ids:
             row[f"{ev}_single"] = fmt_result(pbs.get((ev, "single")), ev, blank="")
             if ev in avg_events:

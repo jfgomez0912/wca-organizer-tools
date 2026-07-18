@@ -27,25 +27,39 @@ ENCODINGS = {
     "UTF-8": "utf-8",
 }
 
+ROLE_LABELS = {
+    "English": {
+        "delegate": "Delegate",
+        "organizer": "Organizer",
+        "competitor": "Competitor",
+    },
+    "Spanish": {
+        "delegate": "Delegado",
+        "organizer": "Organizador",
+        "competitor": "Competidor",
+    },
+}
+
 
 def _country_names() -> dict[str, str]:
     """{iso2: country_name} from the cached WCA country list."""
     return {iso2: name for name, iso2 in fetch_countries().items()}
 
 
-def _build_zip(df, module_rgb) -> bytes:
-    """One transparent QR PNG per registrant, packed into an in-memory ZIP."""
+def _build_zip(df, module_rgb, comp_url) -> bytes:
+    """Per-registrant QR PNGs plus a competition-page QR (competition.png, a staff
+    placeholder), packed into an in-memory ZIP."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("competition.png", qr_png_bytes(comp_url, module_rgb))
         for _, row in df.iterrows():
-            png = qr_png_bytes(row["_qr_url"], module_rgb)
-            zf.writestr(row["qr_file"], png)
+            zf.writestr(row["qr_file"], qr_png_bytes(row["_qr_url"], module_rgb))
     return buf.getvalue()
 
 
 def generate_badges(wcif: dict) -> None:
-    persons = accepted_persons(wcif)
-    if not persons:
+    accepted = accepted_persons(wcif)
+    if not accepted:
         st.warning("No accepted registrations found for this competition.")
         return
 
@@ -53,19 +67,37 @@ def generate_badges(wcif: dict) -> None:
 
     st.subheader(f"Name badges for {wcif.get('name', wcif.get('id', ''))}")
     st.caption(
-        "Personal bests (single and average) come from the WCIF, filtered to this "
-        "competition's events. They are a snapshot taken when the WCIF was generated, "
+        "Build printable name badges for this competition: a spreadsheet (TSV/CSV) of "
+        "everyone with an accepted registration (competitors and non-competing staff) "
+        "— name, short name, country, optional role and per-event personal bests — "
+        "plus a ZIP of CompetitionGroups QR codes. All data "
+        "comes from the WCIF; the personal bests (single and average) are filtered to "
+        "this competition's events and are a snapshot from when the WCIF was generated, "
         "not necessarily the current PBs."
     )
 
     comp_url = f"{COMPETITION_GROUPS_URL}/{wcif.get('id', '')}"
-    color_label = st.radio(
-        "QR module color",
-        list(MODULE_COLORS.keys()),
-        horizontal=True,
-        help="The background is always transparent so it prints on any badge stock.",
-    )
-    module_rgb = MODULE_COLORS[color_label]
+
+    # Audience filter: competitors vs. accepted-but-not-competing staff.
+    competing = [p for p in accepted if (p.get("registration") or {}).get("isCompeting")]
+    staff = [p for p in accepted if not (p.get("registration") or {}).get("isCompeting")]
+    all_groups = {"Competitors": competing, "Non-competing staff": staff}
+    groups = {name: people for name, people in all_groups.items() if people}
+    if len(groups) > 1:
+        picked = st.pills(
+            "Include on badges",
+            list(groups),
+            selection_mode="multi",
+            default=list(groups),
+            format_func=lambda name: f"{name} ({len(groups[name])})",
+            help="Non-competing staff are accepted registrants with no events.",
+        )
+        persons = [p for name in picked for p in groups[name]]
+        if not persons:
+            st.info("Select at least one group to include.")
+            return
+    else:
+        persons = accepted
 
     short_max = st.number_input(
         "Max characters for the short name",
@@ -79,12 +111,23 @@ def generate_badges(wcif: dict) -> None:
         ),
     )
 
-    df = build_badge_df(persons, event_ids, comp_url, _country_names(), int(short_max))
+    include_roles = st.checkbox(
+        "Include role column (Delegate / Organizer / Competitor, from the WCIF)",
+        value=True,
+    )
+    role_labels = None
+    if include_roles:
+        lang = st.radio("Role language", list(ROLE_LABELS), horizontal=True)
+        role_labels = ROLE_LABELS[lang]
+
+    df = build_badge_df(
+        persons, event_ids, comp_url, _country_names(), int(short_max), role_labels
+    )
 
     # Hide the internal URL column from the preview and the exported file.
     display_df = df.drop(columns=["_qr_url"])
 
-    st.markdown(f"**Preview** ({len(display_df)} competitors)")
+    st.markdown(f"**Preview** ({len(display_df)} people)")
     st.dataframe(display_df, hide_index=True)
 
     col_fmt, col_enc = st.columns(2)
@@ -108,9 +151,22 @@ def generate_badges(wcif: dict) -> None:
 
     st.divider()
     st.markdown("**QR codes**")
+    st.caption(
+        "One QR per competitor (`person_<id>.png`) links to their CompetitionGroups "
+        "person page (schedule and groups); an extra `competition.png` links to the "
+        "competition's CompetitionGroups page, usable as a placeholder for staff "
+        "badges. Download them all as a ZIP below."
+    )
+    color_label = st.radio(
+        "QR module color",
+        list(MODULE_COLORS.keys()),
+        horizontal=True,
+        help="The background is always transparent so it prints on any badge stock.",
+    )
+    module_rgb = MODULE_COLORS[color_label]
     if st.button("Generate QR ZIP"):
         with st.spinner("Generating QR codes..."):
-            st.session_state["badges_zip"] = _build_zip(df, module_rgb)
+            st.session_state["badges_zip"] = _build_zip(df, module_rgb, comp_url)
 
     if "badges_zip" in st.session_state:
         st.download_button(

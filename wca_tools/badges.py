@@ -15,9 +15,6 @@ from qrcode.constants import ERROR_CORRECT_M
 
 from .formatting import fmt_result
 
-# Events ranked by single only — no average personal best to show.
-NO_AVERAGE_EVENTS = {"333bf", "444bf", "555bf", "333mbf"}
-
 # Lowercase connectors that glue to their neighbours to form a single surname
 # unit (e.g. "López de Juan", "Pérez y García", "Van der Berg").
 NAME_PARTICLES = {
@@ -146,7 +143,17 @@ def build_badge_df(
     ``delegate``/``organizer``/``competitor``), a ``role`` column is added.
     """
     country_names = country_names or {}
-    avg_events = [e for e in event_ids if e not in NO_AVERAGE_EVENTS]
+    # Show an average column for an event only when at least one person has an
+    # average personal best for it. WCIF stores both average-of-5 and mean-of-3
+    # (e.g. 3BLD) as type "average", so this covers blind means and skips events
+    # with no average at all (e.g. MultiBlind).
+    events_with_avg = {
+        pb["eventId"]
+        for p in persons
+        for pb in p.get("personalBests", [])
+        if pb.get("type") == "average"
+    }
+    avg_events = [e for e in event_ids if e in events_with_avg]
 
     rows = []
     for p in persons:

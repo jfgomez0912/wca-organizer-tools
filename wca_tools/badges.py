@@ -115,13 +115,19 @@ def qr_png_bytes(url: str, module_rgb: tuple[int, int, int] = (0, 0, 0)) -> byte
 
 
 def person_role(person: dict, labels: dict[str, str]) -> str:
-    """Map a WCIF person's roles to a single label (delegate > organizer > competitor)."""
+    """Map a WCIF person to a single role label.
+
+    Priority: delegate > organizer > competitor (if competing) > staff. Someone
+    accepted but not competing, with no delegate/organizer role, is treated as staff.
+    """
     roles = person.get("roles", [])
     if "delegate" in roles or "trainee-delegate" in roles:
         return labels["delegate"]
     if "organizer" in roles:
         return labels["organizer"]
-    return labels["competitor"]
+    if (person.get("registration") or {}).get("isCompeting"):
+        return labels["competitor"]
+    return labels["staff"]
 
 
 def build_badge_df(

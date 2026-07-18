@@ -32,11 +32,13 @@ ROLE_LABELS = {
         "delegate": "Delegate",
         "organizer": "Organizer",
         "competitor": "Competitor",
+        "staff": "Staff",
     },
     "Spanish": {
         "delegate": "Delegado",
         "organizer": "Organizador",
         "competitor": "Competidor",
+        "staff": "Staff",
     },
 }
 

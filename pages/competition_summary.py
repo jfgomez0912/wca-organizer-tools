@@ -2,12 +2,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 import pandas as pd
+import requests
 import streamlit as st
 
-from common import BASE_SVG_URL, EVENT_MAPPING
-from config import PERSON_CACHE_TTL, PERSON_FETCH_WORKERS, PERSON_REQUEST_TIMEOUT
-from services.results import fetch_results_from_api, parse_results_from_wcif
-from wca import accepted_persons, render_competition_selector, render_header, wca_get
+from wca_tools.config import PERSON_CACHE_TTL, PERSON_FETCH_WORKERS, PERSON_REQUEST_TIMEOUT
+from wca_tools.events import BASE_SVG_URL, EVENT_MAPPING
+from wca_tools.formatting import fmt_result
+from wca_tools.results import fetch_results_from_api, parse_results_from_wcif
+from wca_tools.wca import accepted_persons, tool_page, wca_get
 
 # Events where ranking is based on single (no average used)
 NO_AVERAGE_EVENTS = {"333bf", "444bf", "555bf", "333mbf"}
@@ -34,23 +36,6 @@ def _event_icon(event_id: str) -> str:
     )
 
 
-def fmt_result(value: int, event_id: str = "") -> str:
-    """Format a WCA result value (centiseconds) as a readable string."""
-    if value == 0:
-        return "-"
-    if value == -1:
-        return "DNF"
-    if value == -2:
-        return "DNS"
-    if event_id in ("333fm", "333mbf"):
-        return str(value)
-    minutes, remainder = divmod(value, 6000)
-    seconds, centis = divmod(remainder, 100)
-    if minutes:
-        return f"{minutes}:{seconds:02d}.{centis:02d}"
-    return f"{seconds}.{centis:02d}"
-
-
 def primary_result(single: int, average: int, event_id: str) -> int:
     """Return the primary result (average if valid and applicable, else single)."""
     if event_id not in NO_AVERAGE_EVENTS and average > 0:
@@ -65,7 +50,7 @@ def _final_round_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def display_podiums(df: pd.DataFrame) -> None:
-    st.markdown("**Podios por evento**")
+    st.markdown("**Podiums by event**")
 
     df_final = _final_round_df(df)
     df_podium = df_final[df_final["ranking"] <= 3].copy()
@@ -105,35 +90,35 @@ def display_podiums(df: pd.DataFrame) -> None:
           .ev-cell img {{width:20px;height:20px;opacity:0.75;}}
         </style>
         <table class="podium-tbl">
-          <tr><th>Evento</th><th>🥇</th><th>🥈</th><th>🥉</th></tr>
+          <tr><th>Event</th><th>🥇</th><th>🥈</th><th>🥉</th></tr>
           {"".join(rows_html)}
         </table>
         """)
     else:
-        st.info("Sin resultados finales disponibles.")
+        st.info("No final results available.")
 
 
-def display_medallero(df: pd.DataFrame) -> None:
-    st.markdown("**Medallero**")
+def display_medal_table(df: pd.DataFrame) -> None:
+    st.markdown("**Medal table**")
 
     df_final = _final_round_df(df)
     medals = df_final[df_final["ranking"].isin([1, 2, 3])]
     if medals.empty:
-        st.info("Sin datos de medallero.")
+        st.info("No medal data.")
         return
 
     counts = (
-        medals.assign(medal=medals["ranking"].map({1: "Oro", 2: "Plata", 3: "Bronce"}))
+        medals.assign(medal=medals["ranking"].map({1: "Gold", 2: "Silver", 3: "Bronze"}))
         .groupby(["name", "medal"])
         .size()
         .unstack(fill_value=0)
-        .reindex(columns=["Oro", "Plata", "Bronce"], fill_value=0)
+        .reindex(columns=["Gold", "Silver", "Bronze"], fill_value=0)
         .reset_index()
     )
-    counts["Total"] = counts["Oro"] + counts["Plata"] + counts["Bronce"]
+    counts["Total"] = counts["Gold"] + counts["Silver"] + counts["Bronze"]
     medal_df = counts.sort_values(
-        ["Total", "Oro", "Plata", "Bronce"], ascending=False
-    ).rename(columns={"name": "Nombre"})[["Nombre", "Total", "Oro", "Plata", "Bronce"]]
+        ["Total", "Gold", "Silver", "Bronze"], ascending=False
+    ).rename(columns={"name": "Name"})[["Name", "Total", "Gold", "Silver", "Bronze"]]
 
     st.dataframe(medal_df, hide_index=True)
 
@@ -154,7 +139,7 @@ def _pre_comp_pbs(wca_id: str, before_date: str) -> dict[tuple[str, str], int]:
         comps = wca_get(
             f"persons/{wca_id}/competitions", timeout=PERSON_REQUEST_TIMEOUT, auth=False
         )
-    except Exception:
+    except requests.RequestException:
         return {}
     date_of = {c["id"]: c["start_date"] for c in comps}
     pbs: dict[tuple[str, str], int] = {}
@@ -169,9 +154,13 @@ def _pre_comp_pbs(wca_id: str, before_date: str) -> dict[tuple[str, str], int]:
     return pbs
 
 
-def display_records_personales(wcif: dict, df: pd.DataFrame) -> None:
-    st.markdown("**Récords personales en la competencia**")
+def _competition_prs(wcif: dict, df: pd.DataFrame) -> pd.DataFrame:
+    """Rounds that tied or beat each competitor's pre-competition PB (single/average).
 
+    Counts every round from each competitor's pre-competition PB onward — matching
+    the per-round PR badges on WCA Live. First-time-in-event results (no prior PB)
+    are excluded. Returns columns name/event_id/type.
+    """
     comp_date = wcif["schedule"]["startDate"]
     reg_to_wca = {p["registrantId"]: p.get("wcaId") for p in accepted_persons(wcif)}
 
@@ -186,19 +175,14 @@ def display_records_personales(wcif: dict, df: pd.DataFrame) -> None:
         ["registrant_id", "event_id", "type", "round_id"]
     )
 
-    wca_ids = {
-        reg_to_wca[r] for r in rounds["registrant_id"].unique() if reg_to_wca.get(r)
-    }
+    wca_ids = {reg_to_wca[r] for r in rounds["registrant_id"].unique() if reg_to_wca.get(r)}
     pbs_by_wca: dict[str, dict] = {}
-    with st.spinner("Calculando récords personales..."):
+    with st.spinner("Calculating personal records..."):
         with ThreadPoolExecutor(max_workers=PERSON_FETCH_WORKERS) as ex:
             futures = {ex.submit(_pre_comp_pbs, wid, comp_date): wid for wid in wca_ids}
             for fut in as_completed(futures):
                 pbs_by_wca[futures[fut]] = fut.result()
 
-    # Count each ROUND that ties or beats the running best, starting from the
-    # competitor's pre-competition PB. This matches the per-round PR badges on WCA Live
-    # (verified). First-time-in-event (no prior PB, e.g. a debut competition) is excluded.
     pr_rows = []
     for (rid, event_id, typ), grp in rounds.groupby(
         ["registrant_id", "event_id", "type"], sort=False
@@ -213,16 +197,20 @@ def display_records_personales(wcif: dict, df: pd.DataFrame) -> None:
             if r["result"] <= best:
                 pr_rows.append({"name": r["name"], "event_id": event_id, "type": typ})
                 best = r["result"]
+    return pd.DataFrame(pr_rows)
 
-    df_pr = pd.DataFrame(pr_rows)
 
+def display_personal_records(wcif: dict, df: pd.DataFrame) -> None:
+    st.markdown("**Personal records at the competition**")
+
+    df_pr = _competition_prs(wcif, df)
     if df_pr.empty:
-        st.info("Sin récords personales registrados en esta competencia.")
+        st.info("No personal records set at this competition.")
         return
 
     pr_counts = df_pr.groupby("name").size().reset_index(name="PRs")
 
-    # PRs por evento — bar chart with event icons and tooltips
+    # PRs by event — bar chart with event icons and tooltips
     pr_by_event = (
         df_pr.groupby("event_id")["name"]
         .nunique()
@@ -268,13 +256,13 @@ def display_records_personales(wcif: dict, df: pd.DataFrame) -> None:
         <div class="ev-chart-h">{rows_h}</div>"""
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Récords personales", df_pr.shape[0])
-    col2.metric("Competidores con PR", len(pr_counts))
+    col1.metric("Personal records", df_pr.shape[0])
+    col2.metric("Competitors with a PR", len(pr_counts))
     with col3:
         st.html(
             '<p style="font-size:14px;color:rgb(49,51,63);'
             'font-weight:400;margin:0 0 4px;">'
-            "PRs por evento</p>" + chart_html
+            "PRs by event</p>" + chart_html
         )
 
     # Table grouped by person: PR count + icons per type (single / average)
@@ -325,7 +313,7 @@ def display_records_personales(wcif: dict, df: pd.DataFrame) -> None:
           {_TOOLTIP_CSS}
         </style>
         <table class="pr-tbl">
-          <tr><th>Nombre</th><th>PRs</th><th>Single</th><th>Average</th></tr>
+          <tr><th>Name</th><th>PRs</th><th>Single</th><th>Average</th></tr>
           {"".join(rows_html)}
         </table>
         """
@@ -336,45 +324,42 @@ def summarize_wcif(wcif: dict) -> None:
     comp_date = datetime.strptime(wcif["schedule"]["startDate"], "%Y-%m-%d")
     persons = accepted_persons(wcif)
     if not persons:
-        st.warning("No se encontraron inscripciones aceptadas.")
+        st.warning("No accepted registrations found.")
         return
 
     if comp_date.date() >= datetime.today().date():
-        st.info("El resumen solo está disponible para competencias ya realizadas.")
+        st.info("The summary is only available for competitions that have already taken place.")
         return
 
-    st.subheader(f"Resumen de {wcif['name']}")
-    st.caption(comp_date.strftime("%d de %B de %Y"))
+    st.subheader(f"Summary of {wcif['name']}")
+    st.caption(comp_date.strftime("%B %d, %Y"))
 
     event_count = len(wcif.get("events", []))
     total_rounds = sum(len(e.get("rounds", [])) for e in wcif.get("events", []))
     col1, col2, col3 = st.columns(3)
-    col1.metric("Competidores", len(persons))
-    col2.metric("Eventos", event_count)
-    col3.metric("Rondas", total_rounds)
+    col1.metric("Competitors", len(persons))
+    col2.metric("Events", event_count)
+    col3.metric("Rounds", total_rounds)
 
     df = parse_results_from_wcif(wcif, persons)
     if df.empty:
         df = fetch_results_from_api(wcif, wca_get)
 
     if df.empty:
-        st.info("Sin resultados disponibles para esta competencia.")
+        st.info("No results available for this competition.")
         return
 
     display_podiums(df)
     st.divider()
-    display_medallero(df)
+    display_medal_table(df)
     st.divider()
-    display_records_personales(wcif, df)
+    display_personal_records(wcif, df)
 
 
 # --- Page ---
-st.set_page_config(layout="wide")
+st.set_page_config(page_title="Competition Summary", page_icon="📋", layout="wide")
 st.title("Competition Summary")
 
-render_header(page="summary")
-st.divider()
-render_competition_selector("wcif_summary", upcoming=False)
-
-if "wcif_summary" in st.session_state:
-    summarize_wcif(st.session_state["wcif_summary"])
+wcif = tool_page("summary", "wcif_summary", upcoming=False)
+if wcif:
+    summarize_wcif(wcif)

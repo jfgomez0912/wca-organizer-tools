@@ -1,3 +1,5 @@
+"""WCA event metadata: display names and icon URLs."""
+
 EVENT_MAPPING = {
     "333": "3x3x3 Cube",
     "222": "2x2x2 Cube",

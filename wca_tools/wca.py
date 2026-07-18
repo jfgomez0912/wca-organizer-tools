@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 import requests
 import streamlit as st
 
-from config import (
+from .config import (
     ANALYSIS_LOOKBACK_DAYS,
     COUNTRIES_CACHE_TTL,
     COUNTRIES_REQUEST_TIMEOUT,
@@ -18,13 +18,29 @@ _DEFAULT_AVATAR = (
     "https://assets.worldcubeassociation.org/assets/e874e91/assets/"
     "missing_avatar_thumb-d77f478a307a91a9d4a083ad197012a391d5410f6dd26cb0b0e3118a5de71438.png"
 )
-AUTH_SESSION_KEYS = ("user", "tokens")
+_SESSION_EXPIRED_KEY = "_session_expired"
 
 
-def clear_auth_session_state() -> None:
-    """Clear only auth-related keys instead of wiping all page state."""
-    for key in AUTH_SESSION_KEYS:
-        st.session_state.pop(key, None)
+def session_expired() -> bool:
+    """Whether the logged-in WCA session's access token has expired.
+
+    Flagged on a 401 from an authenticated request, or when the token's
+    ``expires_at`` has passed. False when not logged in (no session to expire).
+    """
+    if not st.user.is_logged_in:
+        return False
+    if st.session_state.get(_SESSION_EXPIRED_KEY):
+        return True
+    expires_at = st.user.tokens.get("expires_at")
+    if expires_at and datetime.now().timestamp() >= expires_at:
+        st.session_state[_SESSION_EXPIRED_KEY] = True
+        return True
+    return False
+
+
+def authenticated() -> bool:
+    """Logged in with a still-valid token — gate for authenticated requests and UI."""
+    return st.user.is_logged_in and not session_expired()
 
 
 def wca_get(
@@ -33,16 +49,16 @@ def wca_get(
     auth: bool = True,
     raw_response: bool = False,
 ) -> requests.Response | dict | list:
-    use_auth = auth and st.user.is_logged_in
+    use_auth = auth and authenticated()
     headers = (
         {"Authorization": f"Bearer {st.user.tokens['access']}"} if use_auth else {}
     )
     resp = requests.get(f"{WCA_API}/{path}", headers=headers, timeout=timeout)
     if use_auth and resp.status_code == 401:
-        clear_auth_session_state()
-        st.error("Tu sesión ha expirado. Por favor inicia sesión de nuevo.")
-        st.button("Iniciar sesión con WCA", on_click=st.login, args=["wca"])
-        st.stop()
+        # Token rejected — flag the session expired and rerun so the header shows the
+        # signed-out state (public tools keep working) instead of blocking the page.
+        st.session_state[_SESSION_EXPIRED_KEY] = True
+        st.rerun()
     resp.raise_for_status()
     if raw_response:
         return resp
@@ -75,7 +91,7 @@ def accepted_persons(wcif: dict) -> list[dict]:
 
 def _fetch_wcif(comp_id: str) -> tuple[dict | None, bool]:
     """Try private WCIF (if logged in), fall back to public. Returns (wcif, is_private)."""
-    if st.user.is_logged_in:
+    if authenticated():
         try:
             return wca_get(f"competitions/{comp_id}/wcif", timeout=60), True
         except requests.HTTPError:
@@ -86,17 +102,58 @@ def _fetch_wcif(comp_id: str) -> tuple[dict | None, bool]:
             False,
         )
     except requests.HTTPError as e:
-        st.error(f"Competencia no encontrada: {e}")
+        st.error(f"Competition not found: {e}")
         return None, False
 
 
 def _store_wcif(comp_id: str, wcif_key: str) -> None:
     """Fetch a WCIF by ID and store it (plus privacy flag) in session state."""
-    with st.spinner("Cargando WCIF..."):
+    with st.spinner("Loading WCIF..."):
         wcif, wcif_private = _fetch_wcif(comp_id)
         if wcif is not None:
             st.session_state[wcif_key] = wcif
             st.session_state[f"{wcif_key}_private"] = wcif_private
+            # Reflect the loaded competition in the URL for shareable deep links
+            # (e.g. ?comp=UnicentroArmeniaV2026). Only write when it changed to
+            # avoid an extra rerun.
+            if st.query_params.get("comp") != comp_id:
+                st.query_params["comp"] = comp_id
+
+
+def load_competition_from_query(wcif_key: str) -> None:
+    """Load the WCIF named by the ``?comp=<id>`` query param, if any.
+
+    Enables shareable deep links like ``/name_badges?comp=UnicentroArmeniaV2026``.
+    Runs once per competition: it no-ops when that WCIF is already loaded, so it
+    won't refetch on every rerun. Organizer vs. public access is handled by
+    ``_fetch_wcif`` (authenticated WCIF first, public WCIF as fallback).
+    """
+    comp_id = st.query_params.get("comp")
+    if not comp_id:
+        return
+    current = st.session_state.get(wcif_key)
+    if isinstance(current, dict) and current.get("id") == comp_id:
+        return  # already loaded — nothing to do
+    # Only attempt each id once per session so a broken link doesn't refetch on
+    # every rerun. A fresh session (e.g. after login) resets this and retries.
+    tried_key = f"{wcif_key}_query_comp"
+    if st.session_state.get(tried_key) == comp_id:
+        return
+    st.session_state[tried_key] = comp_id
+    _store_wcif(comp_id, wcif_key)
+
+
+def tool_page(page: str, wcif_key: str, *, upcoming: bool) -> dict | None:
+    """Render the shared tool-page scaffold (header + competition selector).
+
+    Loads a competition from the ``?comp=`` deep link or the selector and returns
+    its WCIF, or None if none is selected yet.
+    """
+    render_header(page=page)
+    st.divider()
+    load_competition_from_query(wcif_key)
+    render_competition_selector(wcif_key, upcoming=upcoming)
+    return st.session_state.get(wcif_key)
 
 
 def render_header(page: str = "analysis") -> None:
@@ -111,14 +168,7 @@ def render_header(page: str = "analysis") -> None:
         f"</script>",
         unsafe_allow_javascript=True,
     )
-    if st.user.is_logged_in:
-        expires_at = st.user.tokens.get("expires_at")
-        if expires_at and datetime.now().timestamp() >= expires_at:
-            clear_auth_session_state()
-            st.warning("Tu sesión ha expirado. Por favor inicia sesión de nuevo.")
-            st.button("Iniciar sesión con WCA", on_click=st.login, args=["wca"])
-            st.stop()
-
+    if authenticated():
         avatar = st.user.get("picture") or _DEFAULT_AVATAR
         col1, col2 = st.columns([0.92, 0.08])
         with col1:
@@ -138,13 +188,46 @@ def render_header(page: str = "analysis") -> None:
             )
         with col2:
             st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
-            st.button("Cerrar sesión", on_click=st.logout, type="primary")
+            st.button("Sign out", on_click=st.logout, type="primary")
     else:
-        st.info(
-            "Inicia sesión con tu cuenta WCA para acceder a tus competencias administradas "
-            "y el análisis completo. La búsqueda por país y por ID está disponible sin iniciar sesión."
+        if session_expired():
+            st.warning("Your session has expired. Please sign in again.")
+        else:
+            st.info(
+                "Sign in with your WCA account to access your managed competitions "
+                "and the full analysis. Search by country and by ID is available without signing in."
+            )
+        st.button("Sign in with WCA", on_click=st.login, args=["wca"])
+
+
+def _search_country_competitions(country_code: str, upcoming: bool) -> list[dict]:
+    """Competitions for a country: an upcoming window, or the most recent PER_PAGE past ones."""
+    if upcoming:
+        start = (datetime.today() - timedelta(days=ANALYSIS_LOOKBACK_DAYS)).strftime(
+            "%Y-%m-%d"
         )
-        st.button("Iniciar sesión con WCA", on_click=st.login, args=["wca"])
+        base = f"competitions?country_iso2={country_code}&start={start}&sort=start_date"
+        return wca_get(f"{base}&per_page={PER_PAGE}", auth=False)
+
+    one_year_ago = (datetime.today() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    yesterday = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+    base = (
+        f"competitions?country_iso2={country_code}"
+        f"&start={one_year_ago}&end={yesterday}&sort=start_date"
+    )
+    # Results are paginated ascending, so walk back from the last page to collect the
+    # most recent PER_PAGE competitions.
+    probe = wca_get(f"{base}&per_page=1", auth=False, raw_response=True)
+    probe.raise_for_status()
+    total = int(probe.headers.get("total", 0))
+    if total == 0:
+        return []
+    comps: list[dict] = []
+    page = math.ceil(total / PER_PAGE)
+    while len(comps) < PER_PAGE and page >= 1:
+        comps = wca_get(f"{base}&per_page={PER_PAGE}&page={page}", auth=False) + comps
+        page -= 1
+    return sorted(comps, key=lambda c: c["start_date"], reverse=True)
 
 
 def render_competition_selector(wcif_key: str, upcoming: bool = True) -> None:
@@ -158,7 +241,7 @@ def render_competition_selector(wcif_key: str, upcoming: bool = True) -> None:
     country_key = f"{wcif_key}_country_comps"
 
     competitions = []
-    if st.user.is_logged_in:
+    if authenticated():
         try:
             data = wca_get("competitions/mine")
             competitions = (
@@ -178,16 +261,16 @@ def render_competition_selector(wcif_key: str, upcoming: bool = True) -> None:
         except requests.HTTPError:
             competitions = []
 
-    st.subheader("Competencias")
+    st.subheader("Competitions")
 
-    if st.user.is_logged_in:
+    if authenticated():
         tab_mine, tab_country, tab_search = st.tabs(
-            ["Mis competencias", "Buscar por país", "Buscar por ID"]
+            ["My competitions", "Search by country", "Search by ID"]
         )
     else:
-        tab_country, tab_search = st.tabs(["Buscar por país", "Buscar por ID"])
+        tab_country, tab_search = st.tabs(["Search by country", "Search by ID"])
 
-    if st.user.is_logged_in:
+    if authenticated():
         with tab_mine:
             if competitions:
                 options = {
@@ -195,13 +278,13 @@ def render_competition_selector(wcif_key: str, upcoming: bool = True) -> None:
                     for c in competitions
                 }
                 with st.form("form_mine"):
-                    selected = st.selectbox("Seleccionar competencia", options.keys())
-                    if st.form_submit_button("Analizar"):
+                    selected = st.selectbox("Select competition", options.keys())
+                    if st.form_submit_button("Analyze"):
                         _store_wcif(options[selected], wcif_key)
             else:
                 st.info(
-                    "No se encontraron competencias administradas. "
-                    "Usa **Buscar por país** o **Buscar por ID**."
+                    "No managed competitions found. "
+                    "Use **Search by country** or **Search by ID**."
                 )
 
     with tab_country:
@@ -211,63 +294,16 @@ def render_competition_selector(wcif_key: str, upcoming: bool = True) -> None:
         )
         with st.form("form_country"):
             country_name = st.selectbox(
-                "País", list(countries.keys()), index=default_idx
+                "Country", list(countries.keys()), index=default_idx
             )
-            if st.form_submit_button("Buscar competencias"):
-                country_code = countries[country_name]
-                with st.spinner("Buscando competencias..."):
+            if st.form_submit_button("Search competitions"):
+                with st.spinner("Searching competitions..."):
                     try:
-                        if upcoming:
-                            lookback_date = (
-                                datetime.today()
-                                - timedelta(days=ANALYSIS_LOOKBACK_DAYS)
-                            ).strftime("%Y-%m-%d")
-                            params = f"&start={lookback_date}"
-                        else:
-                            one_year_ago = (
-                                datetime.today() - timedelta(days=LOOKBACK_DAYS)
-                            ).strftime("%Y-%m-%d")
-                            yesterday = (datetime.today() - timedelta(days=1)).strftime(
-                                "%Y-%m-%d"
-                            )
-                            params = f"&start={one_year_ago}&end={yesterday}"
-                        base_url = (
-                            f"competitions?country_iso2={country_code}{params}"
-                            f"&sort=start_date"
+                        st.session_state[country_key] = _search_country_competitions(
+                            countries[country_name], upcoming
                         )
-                        if upcoming:
-                            st.session_state[country_key] = wca_get(
-                                f"{base_url}&per_page={PER_PAGE}", auth=False
-                            )
-                        else:
-                            # Fetch the most recent PER_PAGE competitions by paginating backwards
-                            probe = wca_get(
-                                f"{base_url}&per_page=1",
-                                auth=False,
-                                raw_response=True,
-                            )
-                            probe.raise_for_status()
-                            total = int(probe.headers.get("total", 0))
-                            if total == 0:
-                                st.session_state[country_key] = []
-                            else:
-                                last_page = math.ceil(total / PER_PAGE)
-                                comps: list[dict] = []
-                                page = last_page
-                                while len(comps) < PER_PAGE and page >= 1:
-                                    batch = wca_get(
-                                        f"{base_url}&per_page={PER_PAGE}&page={page}",
-                                        auth=False,
-                                    )
-                                    comps = batch + comps
-                                    page -= 1
-                                st.session_state[country_key] = sorted(
-                                    comps,
-                                    key=lambda c: c["start_date"],
-                                    reverse=True,
-                                )
                     except requests.HTTPError as e:
-                        st.error(f"Error al buscar competencias: {e}")
+                        st.error(f"Error searching competitions: {e}")
                         st.session_state.pop(country_key, None)
 
         if st.session_state.get(country_key):
@@ -277,17 +313,17 @@ def render_competition_selector(wcif_key: str, upcoming: bool = True) -> None:
             }
             with st.form("form_country_analyze"):
                 selected_cc = st.selectbox(
-                    "Seleccionar competencia", country_options.keys()
+                    "Select competition", country_options.keys()
                 )
-                if st.form_submit_button("Analizar"):
+                if st.form_submit_button("Analyze"):
                     _store_wcif(country_options[selected_cc], wcif_key)
         elif country_key in st.session_state:
-            st.info("No se encontraron competencias para este país.")
+            st.info("No competitions found for this country.")
 
     with tab_search:
         with st.form("form_search"):
             comp_id_input = st.text_input(
-                "ID de competencia", placeholder="ej. UnicentroPereira2023"
+                "Competition ID", placeholder="e.g. UnicentroPereira2023"
             )
-            if st.form_submit_button("Analizar") and comp_id_input:
+            if st.form_submit_button("Analyze") and comp_id_input:
                 _store_wcif(comp_id_input, wcif_key)

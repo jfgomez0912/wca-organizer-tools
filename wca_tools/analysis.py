@@ -1,14 +1,15 @@
-"""Shared competition analysis helpers used by pages 5 and 6."""
+"""Shared helpers for the Competition Analysis page."""
 
 import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
 
-from config import WCA_LIVE_API
-from services.results import ROUND_TYPE_LABEL
-from ui.cards import render_hito_cards
-from wca import wca_get
+from .config import WCA_LIVE_API
+from .formatting import fmt_seconds
+from .results import ROUND_TYPE_LABEL
+from .cards import render_milestone_cards
+from .wca import wca_get
 
 GOALS_333 = [4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 12.0, 15.0, 20.0, 30.0, 60.0]
 # Milestones: competitions whose count ends in 0 or 1 (1st, 10th, 20th, 21st, …)
@@ -24,16 +25,6 @@ def closest_goal(avg: float) -> tuple[float, float]:
     achievable = [g for g in GOALS_333 if g < avg]
     goal = max(achievable) if achievable else min(GOALS_333)
     return goal, avg - goal
-
-
-def fmt_seconds(s: float) -> str:
-    """Format float seconds as M:SS.cc or SS.cc (no suffix)."""
-    total_cs = round(s * 100)
-    minutes, remainder = divmod(total_cs, 6000)
-    secs, centis = divmod(remainder, 100)
-    if minutes:
-        return f"{minutes}:{secs:02d}.{centis:02d}"
-    return f"{secs}.{centis:02d}"
 
 
 def ranked_df(data: list[dict], sort_by: str, **sort_kwargs) -> pd.DataFrame:
@@ -208,79 +199,79 @@ def fetch_live_333_avgs(
     return avgs
 
 
-def display_novatos_y_mujeres(
-    novatos: list[dict], mujeres: list[dict], *, show_novatos: bool = True
+def display_newcomers_and_women(
+    newcomers: list[dict], women: list[dict], *, show_newcomers: bool = True
 ) -> None:
-    cols = st.columns(2) if show_novatos else [st.container()]
-    if show_novatos:
+    cols = st.columns(2) if show_newcomers else [st.container()]
+    if show_newcomers:
         with cols[0]:
-            st.markdown(f"**Novatos** ({len(novatos)})")
-            if novatos:
+            st.markdown(f"**Newcomers** ({len(newcomers)})")
+            if newcomers:
                 st.dataframe(
-                    ranked_df(novatos, "Comp AVG").style.format(
+                    ranked_df(newcomers, "Comp AVG").style.format(
                         {"Comp AVG": fmt_seconds}, na_rep="-"
                     ),
                     hide_index=True,
                 )
             else:
-                st.info("Sin novatos.")
+                st.info("No newcomers.")
     with cols[-1]:
-        st.markdown(f"**Competidoras** ({len(mujeres)})")
-        if mujeres:
+        st.markdown(f"**Women** ({len(women)})")
+        if women:
             st.dataframe(
-                ranked_df(mujeres, "Comp AVG").style.format(
+                ranked_df(women, "Comp AVG").style.format(
                     {"Comp AVG": fmt_seconds}, na_rep="-"
                 ),
                 hide_index=True,
             )
         else:
-            st.info("Sin competidoras.")
+            st.info("No women competitors.")
 
 
-def display_hitos(hitos: list[dict]) -> None:
-    st.markdown(f"**Logros de competencias** ({len(hitos)})")
-    if not hitos:
-        st.info("Sin competidores en hito.")
+def display_milestones(milestones: list[dict]) -> None:
+    st.markdown(f"**Competition milestones** ({len(milestones)})")
+    if not milestones:
+        st.info("No competitors at a milestone.")
         return
 
-    render_hito_cards(hitos)
+    render_milestone_cards(milestones)
 
 
-def display_metas_333(metas: list[dict], *, has_results: bool = False) -> None:
-    st.markdown(f"**PR AVG 3x3x3 y metas más cercanas** ({len(metas)})")
+def display_333_goals(goals: list[dict], *, has_results: bool = False) -> None:
+    st.markdown(f"**3x3x3 PR average & nearest goals** ({len(goals)})")
     if has_results:
         st.caption(
-            "⚠️ Los PR AVGs son los actuales de cada competidor, no los del momento "
-            "de la competencia. Las metas más cercanas pueden no reflejar su objetivo real de ese entonces."
+            "⚠️ The PR averages are each competitor's current ones, not those at the "
+            "time of the competition. The nearest goals may not reflect their actual goal back then."
         )
-    if not metas:
-        st.info("Sin datos de AVG 3x3x3.")
+    if not goals:
+        st.info("No 3x3x3 average data.")
         return
 
-    df = pd.DataFrame(metas).sort_values("PR AVG")
+    df = pd.DataFrame(goals).sort_values("PR AVG")
 
-    # Distribución de competidores por tramo de meta
-    goal_dist = df.groupby("Meta").size().reset_index(name="Competidores")
-    goal_dist = goal_dist.sort_values("Meta")
-    goal_dist["label"] = goal_dist["Meta"].apply(fmt_seconds)
+    # Distribution of competitors by goal bucket
+    goal_dist = df.groupby("Goal").size().reset_index(name="Competitors")
+    goal_dist = goal_dist.sort_values("Goal")
+    goal_dist["label"] = goal_dist["Goal"].apply(fmt_seconds)
     st.altair_chart(
         alt.Chart(goal_dist)
         .mark_bar()
         .encode(
-            x=alt.X("label:N", sort=list(goal_dist["label"]), title="Meta"),
-            y=alt.Y("Competidores:Q"),
-            tooltip=["label", "Competidores"],
+            x=alt.X("label:N", sort=list(goal_dist["label"]), title="Goal"),
+            y=alt.Y("Competitors:Q"),
+            tooltip=["label", "Competitors"],
         ),
         width="stretch",
     )
     if has_results:
-        # Past competition: show Comp AVG, omit Logrado
+        # Past competition: show Comp AVG, omit Achieved
         st.dataframe(
-            df[["Nombre", "PR AVG", "Meta", "Diferencia", "Comp AVG"]].style.format(
+            df[["Name", "PR AVG", "Goal", "Difference", "Comp AVG"]].style.format(
                 {
                     "PR AVG": fmt_seconds,
-                    "Meta": fmt_seconds,
-                    "Diferencia": fmt_seconds,
+                    "Goal": fmt_seconds,
+                    "Difference": fmt_seconds,
                     "Comp AVG": fmt_seconds,
                 },
                 na_rep="-",
@@ -289,18 +280,18 @@ def display_metas_333(metas: list[dict], *, has_results: bool = False) -> None:
         )
         return
 
-    # Upcoming / in-progress: show Comp AVG (may be empty) + Logrado with highlight
+    # Upcoming / in-progress: show Comp AVG (may be empty) + Achieved with highlight
     total_with_results = df["Comp AVG"].notna().sum()
     if total_with_results:
-        achieved_count = int(df["Logrado"].sum())
-        st.caption(f"Meta alcanzada: {achieved_count} / {total_with_results} competidores")
+        achieved_count = int(df["Achieved"].sum())
+        st.caption(f"Goal reached: {achieved_count} / {total_with_results} competitors")
 
-    df["Logrado"] = df["Logrado"].astype("boolean")
+    df["Achieved"] = df["Achieved"].astype("boolean")
 
     def highlight(row):
-        if row["Logrado"] is True:
+        if row["Achieved"] is True:
             return ["background-color: #d4edda"] * len(row)
-        if row["Logrado"] is False:
+        if row["Achieved"] is False:
             return [""] * len(row)
         return ["color: #999"] * len(row)
 
@@ -308,12 +299,12 @@ def display_metas_333(metas: list[dict], *, has_results: bool = False) -> None:
         df.style.apply(highlight, axis=1).format(
             {
                 "PR AVG": fmt_seconds,
-                "Meta": fmt_seconds,
-                "Diferencia": fmt_seconds,
+                "Goal": fmt_seconds,
+                "Difference": fmt_seconds,
                 "Comp AVG": fmt_seconds,
             },
             na_rep="-",
         ),
         hide_index=True,
-        column_config={"Logrado": st.column_config.CheckboxColumn(disabled=True)},
+        column_config={"Achieved": st.column_config.CheckboxColumn(disabled=True)},
     )

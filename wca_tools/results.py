@@ -27,7 +27,8 @@ def parse_results_from_wcif(wcif: dict, accepted_people: list[dict]) -> pd.DataF
         for rnd in event.get("rounds", []):
             round_id = rnd["id"]
             for result in rnd.get("results", []):
-                if result.get("ranking", 0) <= 0:
+                ranking = result.get("ranking") or 0
+                if ranking <= 0:
                     continue
                 records.append(
                     {

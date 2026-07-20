@@ -6,7 +6,7 @@ import requests
 import streamlit as st
 
 from .config import WCA_LIVE_API
-from .formatting import fmt_seconds
+from .formatting import fmt_goal, fmt_seconds
 from .results import ROUND_TYPE_LABEL
 from .cards import render_milestone_cards
 from .wca import wca_get
@@ -239,6 +239,10 @@ def display_milestones(milestones: list[dict]) -> None:
 
 def display_333_goals(goals: list[dict], *, has_results: bool = False) -> None:
     st.markdown(f"**3x3x3 PR average & nearest goals** ({len(goals)})")
+    st.caption(
+        "Each goal is a **sub-X** target: e.g. *sub-10.00* means averaging under "
+        "10 seconds (9.99 or faster)."
+    )
     if has_results:
         st.caption(
             "⚠️ The PR averages are each competitor's current ones, not those at the "
@@ -253,7 +257,7 @@ def display_333_goals(goals: list[dict], *, has_results: bool = False) -> None:
     # Distribution of competitors by goal bucket
     goal_dist = df.groupby("Goal").size().reset_index(name="Competitors")
     goal_dist = goal_dist.sort_values("Goal")
-    goal_dist["label"] = goal_dist["Goal"].apply(fmt_seconds)
+    goal_dist["label"] = goal_dist["Goal"].apply(fmt_goal)
     st.altair_chart(
         alt.Chart(goal_dist)
         .mark_bar()
@@ -270,7 +274,7 @@ def display_333_goals(goals: list[dict], *, has_results: bool = False) -> None:
             df[["Name", "PR AVG", "Goal", "Difference", "Comp AVG"]].style.format(
                 {
                     "PR AVG": fmt_seconds,
-                    "Goal": fmt_seconds,
+                    "Goal": fmt_goal,
                     "Difference": fmt_seconds,
                     "Comp AVG": fmt_seconds,
                 },
@@ -299,7 +303,7 @@ def display_333_goals(goals: list[dict], *, has_results: bool = False) -> None:
         df.style.apply(highlight, axis=1).format(
             {
                 "PR AVG": fmt_seconds,
-                "Goal": fmt_seconds,
+                "Goal": fmt_goal,
                 "Difference": fmt_seconds,
                 "Comp AVG": fmt_seconds,
             },

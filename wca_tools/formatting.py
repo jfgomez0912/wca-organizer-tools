@@ -25,3 +25,8 @@ def fmt_seconds(s: float) -> str:
     minutes, remainder = divmod(total_cs, 6000)
     secs, centis = divmod(remainder, 100)
     return f"{minutes}:{secs:02d}.{centis:02d}" if minutes else f"{secs}.{centis:02d}"
+
+
+def fmt_goal(s: float) -> str:
+    """Format a sub-X goal, e.g. 10.0 -> 'sub-10.00' (reach it by going under X)."""
+    return f"sub-{fmt_seconds(s)}"

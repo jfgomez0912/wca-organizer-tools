@@ -229,7 +229,8 @@ def _collect_analysis(
                     "Goal": goal,
                     "Difference": round(gap, 2),
                     "Comp AVG": fmt_avg,
-                    "Achieved": (comp_avg <= goal) if comp_avg else None,
+                    # A sub-X goal is reached only by going strictly under X.
+                    "Achieved": (comp_avg < goal) if comp_avg else None,
                 }
             )
     return data

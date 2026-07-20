@@ -327,10 +327,6 @@ def summarize_wcif(wcif: dict) -> None:
         st.warning("No accepted registrations found.")
         return
 
-    if comp_date.date() >= datetime.today().date():
-        st.info("The summary is only available for competitions that have already taken place.")
-        return
-
     st.subheader(f"Summary of {wcif['name']}")
     st.caption(comp_date.strftime("%B %d, %Y"))
 
